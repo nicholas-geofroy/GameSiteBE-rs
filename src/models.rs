@@ -1,1 +1,2 @@
-pub(crate) mod user;
+pub mod user;
+pub mod lobby;
