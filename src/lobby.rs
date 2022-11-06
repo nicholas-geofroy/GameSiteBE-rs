@@ -1,3 +1,4 @@
+use crate::games::{GameType};
 use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
 use futures::future::join_all;
 use tokio::sync::mpsc::Sender;
@@ -12,30 +13,35 @@ type UserMap = Arc<Mutex<HashMap<String, Sender<LobbyOutMsg>>>>;
 pub struct Lobby {
     pub id: String,
     pub in_msg: Sender<LobbyInMsg>,
-    users: UserMap
+    users: UserMap,
+    game: GameType
 }
 
 impl Lobby {
     pub fn new(id: String) -> Lobby {
         let (tx, mut rx) = mpsc::channel(100);
         let users = Arc::new(Mutex::new(HashMap::new()));
-        let lobby = Lobby { id: id.clone(), in_msg: tx, users };
+        let lobby = Lobby { id: id.clone(), in_msg: tx, users, game: GameType::JustOne };
         let ret = lobby.clone();
 
         tokio::spawn(async move {
             while let Some(cmd) = rx.recv().await {
                 use LobbyInMsg::*;
+                use LobbyOutMsg::*;
                 match cmd {
                     Join { user_id } => {
                         println!("User {} joined lobby {}", &user_id, &id);
                         lobby
-                            .broadcast(LobbyOutMsg::Members(lobby.get_members().await)).await
-                            .unwrap_or_else(|e| println!("Error in broadcast {}", e))
+                            .broadcast(Members(lobby.get_members().await)).await;
+                        lobby.send(user_id, SelectedGame(lobby.game)).await;
                     },
                     Leave { user_id } => println!("User {} left lobby {}", &user_id, &id),
                     StartGame => println!("Start Game"),
-                    GetUsers{req_id} => println!("Get Users {}", req_id),
-                    GetGameData{req_id} => println!("Get Game Data {}", req_id),
+                    GetUsers{req_uid} => println!("Get Users {}", req_uid),
+                    GetGameData{req_uid} => {
+                        println!("Get Game Data {}", req_uid);
+                        lobby.send(req_uid, SelectedGame(lobby.game)).await;
+                    },
                 }
 
 
@@ -52,7 +58,7 @@ impl Lobby {
             .collect()
     }
 
-    async fn broadcast(& self, msg: LobbyOutMsg) -> Result<(), String> {
+    async fn broadcast(& self, msg: LobbyOutMsg) {
         let users = self.users.lock().await;
         let sends = users.iter()
             .map(|(_, tx)| async {
@@ -64,22 +70,22 @@ impl Lobby {
             .map(|r| r.expect_err("Expected list to only contain errors"))
             .collect();
         if errors.len() > 0 {
-            Err(errors.concat())
-        } else {
-            Ok(())
+            println!("Error in broadcast: {}", errors.concat());
         }
     }
 
-    async fn send(& self, user: String, msg: LobbyOutMsg) -> Result<(), String> {
+    async fn send(& self, user: String, msg: LobbyOutMsg) {
         let um = self.users.lock().await;
 
         if ! um.contains_key(&user){
-            return Err(format!("User {} not found", &user));
+            println!("Tried to send message to {} who was not found", &user);
         }
 
         let tx = um.get(&user).unwrap();
 
-        return tx.send(msg).await.map_err(|e| format!("Unable to send {}", e))
+        if let Err(e) = tx.send(msg).await {
+             println!("Unable to send {}", e);
+        }
     }
 
     pub async fn remove_user(&mut self, user_id: String) {

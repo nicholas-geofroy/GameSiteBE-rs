@@ -1,5 +1,6 @@
 mod user_manager; mod models;
 mod lobby;
+mod games;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{sync::{Mutex, mpsc}, select, join};
