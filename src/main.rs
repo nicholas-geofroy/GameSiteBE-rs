@@ -1,33 +1,38 @@
-mod user_manager; mod models;
-mod lobby;
 mod games;
+mod lobby;
+mod models;
+mod user_manager;
+use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
+use axum::extract::Extension;
+use eyre::{eyre, WrapErr};
+use lobby::{Lobby, LobbyManager};
+use serde_json;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::{sync::{Mutex, mpsc}, select, join};
-use axum::extract::Extension;
-use lobby::{Lobby, LobbyManager};
-use eyre::{eyre, WrapErr};
-use serde_json;
-use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
-
-use axum::{
-    routing::get,
-    Router,
-    response::{Html, IntoResponse}, extract::{WebSocketUpgrade, ws::{Message, WebSocket}, Path}, TypedHeader,
+use tokio::{
+    join, select,
+    sync::{mpsc, Mutex},
 };
 
-type LMRef = Arc<Mutex<LobbyManager>>;
+use axum::{
+    extract::{
+        ws::{Message, WebSocket},
+        Path, WebSocketUpgrade,
+    },
+    response::{Html, IntoResponse},
+    routing::get,
+    Router, TypedHeader,
+};
 
 #[tokio::main]
 async fn main() {
-
     let lm = Arc::new(Mutex::new(LobbyManager::new()));
     let app = Router::new()
         .route("/", get(handler))
         .route("/lobby/:id/ws", get(ws_handler))
         .layer(Extension(lm));
 
-    let addr = SocketAddr::from(([127,0,0,1], 9000));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
     println!("Listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
@@ -39,26 +44,30 @@ async fn handler() -> Html<&'static str> {
     Html("<h1>Hello, World!</h1>")
 }
 
-#[axum::debug_handler]
-async fn ws_handler(Path(lobby_id): Path<String>, Extension(lm): Extension<LMRef>, ws: WebSocketUpgrade, user_agent: Option<TypedHeader<headers::UserAgent>>) -> impl IntoResponse {
+async fn ws_handler<'a>(
+    Path(lobby_id): Path<String>,
+    Extension(lm): Extension<Arc<Mutex<LobbyManager>>>,
+    ws: WebSocketUpgrade,
+    user_agent: Option<TypedHeader<headers::UserAgent>>,
+) -> impl IntoResponse {
     println!("Try connecting to lobby {}", lobby_id);
 
-    let mut lm = lm.lock().await;
+    let lobby = {
+        let mut lm = lm.lock().await;
 
-    let lobby = lm.get(lobby_id);
+        let lobby = lm.get(lobby_id).clone();
+        lobby
+    };
 
     if let Some(TypedHeader(user_agent)) = user_agent {
         println!("`{}` connected to lobby {}", user_agent.as_str(), lobby.id);
     }
 
-    ws.on_upgrade(move |socket| {
-        handle_socket(socket, lobby)
-    })
-
-} 
+    ws.on_upgrade(move |socket: WebSocket| handle_socket(socket, lobby))
+}
 
 async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
-    let lobby_chan = lobby.in_msg.clone();
+    let lobby_chan: mpsc::Sender<LobbyInMsg> = lobby.in_msg.clone();
     let (tx, mut rx) = mpsc::channel(100);
 
     let _user_thread = tokio::spawn(async move {
@@ -81,11 +90,19 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
             return
         };
 
-        lobby.add_user(user_id.clone(), tx).await;
-        let res = lobby_chan.send(models::lobby::LobbyInMsg::Join { user_id: user_id.clone() }).await;
-    
+        lobby.add_user(user_id.clone(), tx.clone()).await;
+        let res = lobby_chan
+            .send(models::lobby::LobbyInMsg::Join {
+                user_id: user_id.clone(),
+            })
+            .await;
+
         if res.is_err() {
-            println!("Could not join lobby {}, error: {}", &lobby.id, res.unwrap_err());
+            println!(
+                "Could not join lobby {}, error: {}",
+                &lobby.id,
+                res.unwrap_err()
+            );
         }
 
         loop {
@@ -111,7 +128,7 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
                                                 let msg = serde_json::to_string(
                                                     &LobbyOutMsg::Error { msg: format!("{}", e)}
                                                 ).unwrap_or_else(|_| "Internal Server Error...".to_owned());
-    
+
                                                 socket.send(Message::Text(msg)).await.unwrap_or_else(|err| {
                                                     println!("Error message failed to send {}", err);
                                                 });
@@ -136,7 +153,7 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
                         },
                         Err(e) => {
                             println!("{:?}", e);
-                            
+
                             let (_, _) = join!(
                                 lobby_chan.send(LobbyInMsg::Leave{user_id: user_id.clone()}),
                                 lobby.remove_user(user_id)
@@ -171,6 +188,4 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
             }
         }
     });
-    
 }
-

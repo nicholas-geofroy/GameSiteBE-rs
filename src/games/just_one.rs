@@ -1,39 +1,48 @@
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
-enum InvalidMove {
+#[derive(Debug)]
+pub enum InvalidMove {
+    CouldNotParse { msg: String },
     NotYourTurn { msg: String },
     WrongState { msg: String },
+    InvalidUser { msg: String },
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
 enum RoundState {
     GivingHints,
     RemovingDuplicates,
     Guessing,
     RoundFinished,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Guess {
     val: String,
     is_correct: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Hint {
     val: String,
     duplicate: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct RoundData<'a> {
-    players: Vec<&'a String>,
+    players: Vec<String>,
     guesser: &'a str,
-    hints: HashMap<&'a str, Hint>,
+    hints: HashMap<String, Hint>,
     guesses: Vec<Guess>,
     word: String,
     cur_state: RoundState,
 }
 
 impl<'a> RoundData<'a> {
-    fn new(players: Vec<&'a String>, guesser: &'a str) -> RoundData<'a> {
+    fn new(players: Vec<String>, guesser: &'a str) -> RoundData<'a> {
         return RoundData {
             players,
             guesser,
@@ -44,7 +53,7 @@ impl<'a> RoundData<'a> {
         };
     }
 
-    fn give_hint(&mut self, user: &'a str, hint: String) -> Result<(), InvalidMove> {
+    fn give_hint(&mut self, user: &String, hint: String) -> Result<(), InvalidMove> {
         if self.guesser == user {
             return Err(InvalidMove::NotYourTurn {
                 msg: "The guesser cannot give hints".to_owned(),
@@ -58,7 +67,7 @@ impl<'a> RoundData<'a> {
         }
 
         self.hints
-            .entry(user)
+            .entry(user.clone())
             .and_modify(|h| {
                 h.val = hint.clone();
             })
@@ -87,7 +96,7 @@ impl<'a> RoundData<'a> {
         Ok(())
     }
 
-    fn guess(&mut self, user: &'a str, val: String) -> Result<(), InvalidMove> {
+    fn guess(&mut self, user: &str, val: String) -> Result<(), InvalidMove> {
         if self.guesser != user {
             return Err(InvalidMove::NotYourTurn {
                 msg: "Only the guesser can guess".to_owned(),
@@ -108,7 +117,7 @@ impl<'a> RoundData<'a> {
         Ok(())
     }
 
-    fn done_removing_dupes(&mut self, user: &'a str) -> Result<(), InvalidMove> {
+    fn done_removing_dupes(&mut self, user: &str) -> Result<(), InvalidMove> {
         if self.guesser == user {
             return Err(InvalidMove::NotYourTurn {
                 msg: "The guesser cannot say all duplicates have been removed".to_owned(),
@@ -119,17 +128,122 @@ impl<'a> RoundData<'a> {
 
         return Ok(());
     }
+
+    fn set_duplicate(&mut self, user: &str, hint_user: &str) -> Result<(), InvalidMove> {
+        if self.guesser == user {
+            return Err(InvalidMove::NotYourTurn {
+                msg: "Cannot set duplicate when you're the guesser".to_string(),
+            });
+        }
+        self.hints
+            .get_mut(hint_user)
+            .map(|hint| {
+                hint.duplicate = true;
+            })
+            .ok_or(InvalidMove::InvalidUser {
+                msg: format!("User {} does not exist", user),
+            })
+    }
+
+    fn set_unique(&mut self, user: &str, hint_user: &str) -> Result<(), InvalidMove> {
+        if self.guesser == user {
+            return Err(InvalidMove::NotYourTurn {
+                msg: "Cannot set duplicate when you're the guesser".to_string(),
+            });
+        }
+        self.hints
+            .get_mut(hint_user)
+            .map(|hint| {
+                hint.duplicate = false;
+            })
+            .ok_or(InvalidMove::InvalidUser {
+                msg: format!("User {} does not exist", user),
+            })
+    }
+
+    fn set_guess_correctness(&mut self, user: &str, is_correct: bool) -> Result<(), InvalidMove> {
+        if self.guesser == user {
+            return Err(InvalidMove::NotYourTurn {
+                msg: "Cannot set Guesses when you're the guesser".to_string(),
+            });
+        } else if self.cur_state != RoundState::Guessing {
+            return Err(InvalidMove::WrongState {
+                msg: "Must be in guessing state to set guesses as correct/incorrect".to_string(),
+            });
+        }
+
+        self.guesses
+            .last_mut()
+            .map(|guess| {
+                guess.is_correct = is_correct;
+            })
+            .ok_or(InvalidMove::WrongState {
+                msg: "No guess has been made yet".to_string(),
+            })
+    }
+
+    fn filter(&self, user: &str) -> RoundData<'a> {
+        let hints: HashMap<String, Hint> = if self.guesser == user
+            && (self.cur_state == RoundState::GivingHints
+                || self.cur_state == RoundState::RemovingDuplicates)
+        {
+            self.hints
+                .iter()
+                .map(|(u, h)| {
+                    (
+                        u.clone(),
+                        Hint {
+                            val: "".to_owned(),
+                            duplicate: h.duplicate,
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            self.hints
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
+
+        let word = if self.guesser == user && self.cur_state != RoundState::RoundFinished {
+            "".to_owned()
+        } else {
+            self.word.clone()
+        };
+
+        RoundData {
+            players: self.players.clone(),
+            guesser: self.guesser,
+            hints,
+            guesses: self.guesses.clone(),
+            word,
+            cur_state: self.cur_state,
+        }
+    }
 }
 
-struct GameData<'a> {
-    players: Vec<&'a String>,
+#[derive(Serialize, Debug, Clone)]
+pub struct GameData<'a> {
+    players: &'a Vec<String>,
 
     round: usize,
-    rounds: Vec<Box<RoundData<'a>>>,
+    rounds: Vec<RoundData<'a>>,
+}
+#[derive(Serialize, Deserialize, Debug)]
+enum JustOneMove {
+    Guess(String),
+    Hint(String),
+    SetDuplicate { hint_id: String },
+    SetUnique { hint_id: String },
+    RevealHints,
+    CorrectGuess,
+    WrongGuess,
+    NextRound,
 }
 
 impl<'a> GameData<'a> {
-    fn new(players: Vec<&'a String>) -> GameData<'a> {
+    pub fn new(players: &'a Vec<String>) -> GameData<'a> {
         return GameData {
             players,
             round: 0,
@@ -138,26 +252,50 @@ impl<'a> GameData<'a> {
     }
 
     fn new_round(&mut self) {
-        self.rounds.push(Box::new(RoundData::new(
+        self.rounds.push(RoundData::new(
             self.players.clone(),
-            self.players[self.round % self.players.len()],
-        )));
+            self.players[self.round % self.players.len()].as_str(),
+        ));
         self.round += 1;
     }
 
-    fn cur_round(&mut self) -> &mut Box<RoundData<'a>> {
+    fn cur_round(&mut self) -> &mut RoundData<'a> {
         return &mut self.rounds[self.round - 1];
     }
 
-    fn guess(&mut self, user: &'a str, val: String) -> Result<&GameData<'a>, InvalidMove> {
-        self.cur_round().guess(user, val).map(|_| &*self)
+    pub fn filter(&self, user: &str) -> GameData<'a> {
+        let mut rounds = self.rounds.clone();
+
+        if let Some(last) = rounds.pop() {
+            rounds.push(last.filter(user))
+        }
+
+        return GameData {
+            players: self.players,
+            round: self.round,
+            rounds,
+        };
     }
 
-    fn give_hint(&mut self, user: &'a str, val: String) -> Result<&GameData<'a>, InvalidMove> {
-        self.cur_round().give_hint(user, val).map(|_| &*self)
-    }
+    pub fn make_move(&mut self, req_uid: &String, m: Value) -> Result<&GameData<'a>, InvalidMove> {
+        let res = serde_json::from_value(m);
 
-    fn done_removing_dupes(&mut self, user: &'a str) -> Result<&GameData<'a>, InvalidMove> {
-        self.cur_round().done_removing_dupes(user).map(|_| &*self)
+        if let Err(e) = res {
+            return Err(InvalidMove::CouldNotParse { msg: e.to_string() });
+        }
+
+        let cur_roud = self.cur_round();
+
+        return match res.unwrap() {
+            JustOneMove::Guess(guess) => cur_roud.guess(req_uid, guess),
+            JustOneMove::Hint(hint) => cur_roud.give_hint(req_uid, hint),
+            JustOneMove::SetDuplicate { hint_id } => cur_roud.set_duplicate(&req_uid, &hint_id),
+            JustOneMove::SetUnique { hint_id } => cur_roud.set_unique(&req_uid, &hint_id),
+            JustOneMove::RevealHints => cur_roud.done_removing_dupes(&req_uid),
+            JustOneMove::CorrectGuess => cur_roud.set_guess_correctness(&req_uid, true),
+            JustOneMove::WrongGuess => cur_roud.set_guess_correctness(&req_uid, false),
+            JustOneMove::NextRound => Ok(self.new_round()),
+        }
+        .map(|_| &*self);
     }
 }

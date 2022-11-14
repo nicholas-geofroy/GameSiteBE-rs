@@ -1,11 +1,12 @@
-use crate::games::{GameType};
+use crate::games::just_one::GameData; // TODO: dynamic game
+use crate::games::GameType;
 use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
 use futures::future::join_all;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::{mpsc, Mutex};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use eyre::Result;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{mpsc, Mutex};
 
 type UserMap = Arc<Mutex<HashMap<String, Sender<LobbyOutMsg>>>>;
 
@@ -14,57 +15,137 @@ pub struct Lobby {
     pub id: String,
     pub in_msg: Sender<LobbyInMsg>,
     users: UserMap,
-    game: GameType
+    game: GameType,
 }
 
 impl Lobby {
     pub fn new(id: String) -> Lobby {
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, rx) = mpsc::channel(100);
         let users = Arc::new(Mutex::new(HashMap::new()));
-        let lobby = Lobby { id: id.clone(), in_msg: tx, users, game: GameType::JustOne };
+        let mut lobby = Lobby {
+            id: id.clone(),
+            in_msg: tx,
+            users,
+            game: GameType::JustOne,
+        };
         let ret = lobby.clone();
 
         tokio::spawn(async move {
-            while let Some(cmd) = rx.recv().await {
-                use LobbyInMsg::*;
-                use LobbyOutMsg::*;
-                match cmd {
-                    Join { user_id } => {
-                        println!("User {} joined lobby {}", &user_id, &id);
-                        lobby
-                            .broadcast(Members(lobby.get_members().await)).await;
-                        lobby.send(user_id, SelectedGame(lobby.game)).await;
-                    },
-                    Leave { user_id } => println!("User {} left lobby {}", &user_id, &id),
-                    StartGame => println!("Start Game"),
-                    GetUsers{req_uid} => println!("Get Users {}", req_uid),
-                    GetGameData{req_uid} => {
-                        println!("Get Game Data {}", req_uid);
-                        lobby.send(req_uid, SelectedGame(lobby.game)).await;
-                    },
-                }
-
-
-            }
+            lobby.lobby_loop(rx).await;
         });
         ret
-        
     }
 
-    async fn get_members(& self) -> Vec<String> {
-        self.users.lock().await
+    async fn lobby_loop(&mut self, mut rx: Receiver<LobbyInMsg>) {
+        while let Some(cmd) = rx.recv().await {
+            use LobbyInMsg::*;
+            use LobbyOutMsg::*;
+            match cmd {
+                Join { user_id } => {
+                    println!("User {} joined lobby {}", &user_id, &self.id);
+                    let members = self.get_members().await;
+
+                    self.broadcast(|_| Members(members.clone())).await;
+                    self.send(user_id, SelectedGame(self.game)).await;
+                }
+                Leave { user_id } => println!("User {} left lobby {}", &user_id, &self.id),
+                Start { req_uid: _ } => {
+                    println!("Start Game");
+                    let users: Vec<String> = self.get_members().await;
+                    self.game_loop(&mut rx, GameData::new(&users)).await;
+                }
+                GetUsers { req_uid } => {
+                    println!("Get Users {}", req_uid);
+                    self.send(req_uid, Members(self.get_members().await)).await;
+                }
+                GetGameData { req_uid } => {
+                    println!("Get Game Data {}", req_uid);
+                    self.send(req_uid, SelectedGame(self.game)).await;
+                }
+                GameMove { req_uid, action: _ } => {
+                    self.send(
+                        req_uid,
+                        Error {
+                            msg: "Invalid Msg. Cannot make move during the lobby".to_string(),
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+    }
+
+    async fn game_loop(&mut self, rx: &mut Receiver<LobbyInMsg>, mut game: GameData<'_>) {
+        while let Some(cmd) = rx.recv().await {
+            use LobbyInMsg::*;
+            use LobbyOutMsg::*;
+            match cmd {
+                Join { user_id } => {
+                    println!("User {} joined lobby {}", &user_id, &self.id);
+                    let members = self.get_members().await;
+                    self.broadcast(|_| Members(members.clone())).await;
+                    self.send(user_id, SelectedGame(self.game)).await;
+                }
+                Leave { user_id } => println!("User {} left lobby {}", &user_id, &self.id),
+                Start { req_uid } => {
+                    self.send(
+                        req_uid,
+                        Error {
+                            msg: "Invalid Msg. Cannot start a game during an existing game"
+                                .to_string(),
+                        },
+                    )
+                    .await
+                }
+                GetUsers { req_uid } => {
+                    println!("Get Users {}", req_uid);
+                    self.send(req_uid, Members(self.get_members().await)).await;
+                }
+                GetGameData { req_uid } => {
+                    println!("Get Game Data {}", req_uid);
+                    self.send(req_uid, SelectedGame(self.game)).await;
+                }
+                GameMove { req_uid, action } => match game.make_move(&req_uid, action) {
+                    Ok(state) => {
+                        self.broadcast(|u| match serde_json::to_string(&state.filter(u)) {
+                            Ok(s) => LobbyOutMsg::GameState(s),
+                            Err(e) => LobbyOutMsg::Error { msg: e.to_string() },
+                        })
+                        .await;
+                    }
+                    Err(e) => {
+                        self.send(
+                            req_uid,
+                            Error {
+                                msg: format!("Invalid Move: {:?}", e),
+                            },
+                        )
+                        .await
+                    }
+                },
+            }
+        }
+    }
+
+    async fn get_members(&self) -> Vec<String> {
+        self.users
+            .lock()
+            .await
             .iter()
             .map(|(id, _)| id.clone())
             .collect()
     }
 
-    async fn broadcast(& self, msg: LobbyOutMsg) {
+    async fn broadcast(&self, f: impl Fn(&str) -> LobbyOutMsg) {
         let users = self.users.lock().await;
-        let sends = users.iter()
-            .map(|(_, tx)| async {
-                tx.send(msg.clone()).await.map_err(|e| format!("Unable to send {}", e))
-            });
-        let errors: Vec<String> = join_all(sends).await
+
+        let sends = users.iter().map(|(u_id, tx)| async {
+            tx.send(f(u_id))
+                .await
+                .map_err(|e| format!("Unable to send {}", e))
+        });
+        let errors: Vec<String> = join_all(sends)
+            .await
             .into_iter()
             .filter(|r| r.is_err())
             .map(|r| r.expect_err("Expected list to only contain errors"))
@@ -74,17 +155,17 @@ impl Lobby {
         }
     }
 
-    async fn send(& self, user: String, msg: LobbyOutMsg) {
+    async fn send(&self, user: String, msg: LobbyOutMsg) {
         let um = self.users.lock().await;
 
-        if ! um.contains_key(&user){
+        if !um.contains_key(&user) {
             println!("Tried to send message to {} who was not found", &user);
         }
 
         let tx = um.get(&user).unwrap();
 
         if let Err(e) = tx.send(msg).await {
-             println!("Unable to send {}", e);
+            println!("Unable to send {}", e);
         }
     }
 
@@ -95,26 +176,27 @@ impl Lobby {
     pub async fn add_user(&mut self, user_id: String, tx: Sender<LobbyOutMsg>) {
         self.users.lock().await.insert(user_id, tx);
     }
-
 }
 
+//TODO: could probably use Rc<String> to reduce copiess
 pub struct LobbyManager {
-    lobbies: HashMap<String, Lobby>
+    lobbies: HashMap<String, Lobby>,
 }
 
 impl LobbyManager {
     pub fn new() -> LobbyManager {
-        LobbyManager { lobbies: HashMap::new() }
+        LobbyManager {
+            lobbies: HashMap::new(),
+        }
     }
 
     pub fn get(&mut self, id: String) -> Lobby {
-        match self.lobbies.get(&id){
+        match self.lobbies.get(&id) {
             Some(l) => l.clone(),
             None => {
                 let l = Lobby::new(id);
                 self.lobbies.insert(l.id.clone(), l.clone());
                 l
-            
             }
         }
     }
