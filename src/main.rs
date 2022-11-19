@@ -6,6 +6,7 @@ use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
 use axum::extract::Extension;
 use eyre::{eyre, WrapErr};
 use lobby::{Lobby, LobbyManager};
+use models::lobby::InMsg;
 use serde_json;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -67,7 +68,7 @@ async fn ws_handler<'a>(
 }
 
 async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
-    let lobby_chan: mpsc::Sender<LobbyInMsg> = lobby.in_msg.clone();
+    let lobby_chan: mpsc::Sender<InMsg> = lobby.in_msg.clone();
     let (tx, mut rx) = mpsc::channel(100);
 
     let _user_thread = tokio::spawn(async move {
@@ -92,8 +93,11 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
 
         lobby.add_user(user_id.clone(), tx.clone()).await;
         let res = lobby_chan
-            .send(models::lobby::LobbyInMsg::Join {
-                user_id: user_id.clone(),
+            .send(InMsg {
+                uid: user_id.clone(),
+                cmd: models::lobby::LobbyInMsg::Join {
+                    user_id: user_id.clone(),
+                },
             })
             .await;
 
@@ -117,12 +121,12 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
                         Ok(msg)=> {
                             match msg {
                                 Message::Text(t) => {
-                                    println!("client sent str: {:?}", t);
                                     if !t.eq("ping") {
+                                        println!("client sent str: {:?}", t);
                                         let msg: Result<LobbyInMsg, _> = serde_json::from_str(&t);
                                         match msg {
                                             Ok(msg) => {
-                                                lobby_chan.send(msg).await.unwrap_or_else(|e| println!("{}", e));
+                                                lobby_chan.send(InMsg { uid: user_id.clone(), cmd: msg }).await.unwrap_or_else(|e| println!("{}", e));
                                             },
                                             Err(e) => {
                                                 let msg = serde_json::to_string(
@@ -155,7 +159,7 @@ async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
                             println!("{:?}", e);
 
                             let (_, _) = join!(
-                                lobby_chan.send(LobbyInMsg::Leave{user_id: user_id.clone()}),
+                                lobby_chan.send(InMsg {uid: user_id.clone(), cmd: LobbyInMsg::Leave }),
                                 lobby.remove_user(user_id)
                             );
                             return

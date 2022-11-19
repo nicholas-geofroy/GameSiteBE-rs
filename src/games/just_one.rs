@@ -244,11 +244,14 @@ enum JustOneMove {
 
 impl<'a> GameData<'a> {
     pub fn new(players: &'a Vec<String>) -> GameData<'a> {
-        return GameData {
+        let mut game = GameData {
             players,
             round: 0,
             rounds: Vec::new(),
         };
+        game.new_round();
+
+        return game;
     }
 
     fn new_round(&mut self) {

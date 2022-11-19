@@ -1,6 +1,6 @@
 use crate::games::just_one::GameData; // TODO: dynamic game
 use crate::games::GameType;
-use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
+use crate::models::lobby::{InMsg, LobbyInMsg, LobbyOutMsg};
 use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ type UserMap = Arc<Mutex<HashMap<String, Sender<LobbyOutMsg>>>>;
 #[derive(Clone)]
 pub struct Lobby {
     pub id: String,
-    pub in_msg: Sender<LobbyInMsg>,
+    pub in_msg: Sender<InMsg>,
     users: UserMap,
     game: GameType,
 }
@@ -36,11 +36,13 @@ impl Lobby {
         ret
     }
 
-    async fn lobby_loop(&mut self, mut rx: Receiver<LobbyInMsg>) {
-        while let Some(cmd) = rx.recv().await {
+    async fn lobby_loop(&mut self, mut rx: Receiver<InMsg>) {
+        while let Some(msg) = rx.recv().await {
             use LobbyInMsg::*;
             use LobbyOutMsg::*;
-            match cmd {
+            let req_uid = msg.uid;
+
+            match msg.cmd {
                 Join { user_id } => {
                     println!("User {} joined lobby {}", &user_id, &self.id);
                     let members = self.get_members().await;
@@ -48,21 +50,21 @@ impl Lobby {
                     self.broadcast(|_| Members(members.clone())).await;
                     self.send(user_id, SelectedGame(self.game)).await;
                 }
-                Leave { user_id } => println!("User {} left lobby {}", &user_id, &self.id),
-                Start { req_uid: _ } => {
+                Leave => println!("User {} left lobby {}", &req_uid, &self.id),
+                Start => {
                     println!("Start Game");
                     let users: Vec<String> = self.get_members().await;
                     self.game_loop(&mut rx, GameData::new(&users)).await;
                 }
-                GetUsers { req_uid } => {
+                GetUsers => {
                     println!("Get Users {}", req_uid);
                     self.send(req_uid, Members(self.get_members().await)).await;
                 }
-                GetGameData { req_uid } => {
+                GetGameData => {
                     println!("Get Game Data {}", req_uid);
                     self.send(req_uid, SelectedGame(self.game)).await;
                 }
-                GameMove { req_uid, action: _ } => {
+                GameMove { action: _ } => {
                     self.send(
                         req_uid,
                         Error {
@@ -75,19 +77,22 @@ impl Lobby {
         }
     }
 
-    async fn game_loop(&mut self, rx: &mut Receiver<LobbyInMsg>, mut game: GameData<'_>) {
-        while let Some(cmd) = rx.recv().await {
+    async fn game_loop(&mut self, rx: &mut Receiver<InMsg>, mut game: GameData<'_>) {
+        self.broadcast_state(&game).await;
+        while let Some(msg) = rx.recv().await {
             use LobbyInMsg::*;
             use LobbyOutMsg::*;
-            match cmd {
+
+            let req_uid = msg.uid;
+            match msg.cmd {
                 Join { user_id } => {
                     println!("User {} joined lobby {}", &user_id, &self.id);
                     let members = self.get_members().await;
                     self.broadcast(|_| Members(members.clone())).await;
                     self.send(user_id, SelectedGame(self.game)).await;
                 }
-                Leave { user_id } => println!("User {} left lobby {}", &user_id, &self.id),
-                Start { req_uid } => {
+                Leave => println!("User {} left lobby {}", &req_uid, &self.id),
+                Start => {
                     self.send(
                         req_uid,
                         Error {
@@ -97,21 +102,17 @@ impl Lobby {
                     )
                     .await
                 }
-                GetUsers { req_uid } => {
+                GetUsers => {
                     println!("Get Users {}", req_uid);
                     self.send(req_uid, Members(self.get_members().await)).await;
                 }
-                GetGameData { req_uid } => {
+                GetGameData => {
                     println!("Get Game Data {}", req_uid);
                     self.send(req_uid, SelectedGame(self.game)).await;
                 }
-                GameMove { req_uid, action } => match game.make_move(&req_uid, action) {
+                GameMove { action } => match game.make_move(&req_uid, action) {
                     Ok(state) => {
-                        self.broadcast(|u| match serde_json::to_string(&state.filter(u)) {
-                            Ok(s) => LobbyOutMsg::GameState(s),
-                            Err(e) => LobbyOutMsg::Error { msg: e.to_string() },
-                        })
-                        .await;
+                        self.broadcast_state(&state).await;
                     }
                     Err(e) => {
                         self.send(
@@ -125,6 +126,17 @@ impl Lobby {
                 },
             }
         }
+    }
+
+    async fn broadcast_state(&self, state: &GameData<'_>) {
+        self.broadcast(|u| match serde_json::to_value(&state.filter(u)) {
+            Ok(s) => {
+                println!("Sending State {}", s);
+                LobbyOutMsg::GameState(s)
+            }
+            Err(e) => LobbyOutMsg::Error { msg: e.to_string() },
+        })
+        .await;
     }
 
     async fn get_members(&self) -> Vec<String> {

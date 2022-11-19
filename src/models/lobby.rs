@@ -3,6 +3,11 @@ use serde_json::Value;
 
 use crate::games::GameType;
 
+pub struct InMsg {
+    pub uid: String,
+    pub cmd: LobbyInMsg,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "msgType", content = "data")]
 #[serde(rename_all = "camelCase")]
@@ -10,15 +15,15 @@ pub enum LobbyInMsg {
     #[serde(rename_all = "camelCase")]
     Join { user_id: String },
     #[serde(rename_all = "camelCase")]
-    Leave { user_id: String },
+    Leave,
     #[serde(rename_all = "camelCase")]
-    Start { req_uid: String },
+    Start,
     #[serde(rename_all = "camelCase")]
-    GetUsers { req_uid: String },
+    GetUsers,
     #[serde(rename_all = "camelCase")]
-    GetGameData { req_uid: String },
+    GetGameData,
     #[serde(rename_all = "camelCase")]
-    GameMove { req_uid: String, action: Value },
+    GameMove { action: Value },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
@@ -34,5 +39,5 @@ pub enum LobbyOutMsg {
     Error { msg: String },
     Members(Vec<String>),
     SelectedGame(GameType),
-    GameState(String),
+    GameState(Value),
 }
