@@ -1,25 +1,16 @@
 mod games;
 mod lobby;
 mod models;
+mod socket;
 mod user_manager;
-use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
 use axum::extract::Extension;
-use eyre::{eyre, WrapErr};
-use lobby::{Lobby, LobbyManager};
-use models::lobby::InMsg;
-use serde_json;
+use lobby::LobbyManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::{
-    join, select,
-    sync::{mpsc, Mutex},
-};
+use tokio::sync::Mutex;
 
 use axum::{
-    extract::{
-        ws::{Message, WebSocket},
-        Path, WebSocketUpgrade,
-    },
+    extract::{ws::WebSocket, Path, WebSocketUpgrade},
     response::{Html, IntoResponse},
     routing::get,
     Router, TypedHeader,
@@ -64,132 +55,5 @@ async fn ws_handler<'a>(
         println!("`{}` connected to lobby {}", user_agent.as_str(), lobby.id);
     }
 
-    ws.on_upgrade(move |socket: WebSocket| handle_socket(socket, lobby))
-}
-
-async fn handle_socket(mut socket: WebSocket, mut lobby: Lobby) {
-    let lobby_chan: mpsc::Sender<InMsg> = lobby.in_msg.clone();
-    let (tx, mut rx) = mpsc::channel(100);
-
-    let _user_thread = tokio::spawn(async move {
-        let Some(res) = socket.recv().await else {
-            println!("Socked closed before join message");
-            return
-        };
-        let Ok(ws_msg) = res else {
-            print!("Socked closed before join message");
-            return
-        };
-        let Message::Text(txt) = ws_msg else {
-            print!("Initial message from socket was not a text message. Msg: {:?}", &ws_msg);
-            let _ = socket.send(Message::Text("Error: Expected join message with user id".to_string())).await;
-            return
-        };
-        let Ok(LobbyInMsg::Join { user_id }) = serde_json::from_str(&txt) else {
-            println!("Initial message from socket was not join message. Msg {}", txt);
-            let _ = socket.send(Message::Text("Error: Expected join message with user id".to_string())).await;
-            return
-        };
-
-        lobby.add_user(user_id.clone(), tx.clone()).await;
-        let res = lobby_chan
-            .send(InMsg {
-                uid: user_id.clone(),
-                cmd: models::lobby::LobbyInMsg::Join {
-                    user_id: user_id.clone(),
-                },
-            })
-            .await;
-
-        if res.is_err() {
-            println!(
-                "Could not join lobby {}, error: {}",
-                &lobby.id,
-                res.unwrap_err()
-            );
-        }
-
-        loop {
-            select! {
-                res = socket.recv() => {
-                    match res
-                        .map(|r| match r {
-                            Ok(Message::Close(_)) => Err(eyre!("Socket closed by client {}", &user_id)),
-                            x => x.wrap_err(format!("Client {} Socket Error", &user_id))
-                        })
-                        .unwrap_or_else(|| Err(eyre!("Socket Closed"))) {
-                        Ok(msg)=> {
-                            match msg {
-                                Message::Text(t) => {
-                                    if !t.eq("ping") {
-                                        println!("client sent str: {:?}", t);
-                                        let msg: Result<LobbyInMsg, _> = serde_json::from_str(&t);
-                                        match msg {
-                                            Ok(msg) => {
-                                                lobby_chan.send(InMsg { uid: user_id.clone(), cmd: msg }).await.unwrap_or_else(|e| println!("{}", e));
-                                            },
-                                            Err(e) => {
-                                                let msg = serde_json::to_string(
-                                                    &LobbyOutMsg::Error { msg: format!("{}", e)}
-                                                ).unwrap_or_else(|_| "Internal Server Error...".to_owned());
-
-                                                socket.send(Message::Text(msg)).await.unwrap_or_else(|err| {
-                                                    println!("Error message failed to send {}", err);
-                                                });
-                                            }
-                                        }
-                                    }
-                                }
-                                Message::Binary(_) => {
-                                    println!("client sent binary data... ignoring");
-                                }
-                                Message::Ping(_) => {
-                                    println!("socket ping");
-                                }
-                                Message::Pong(_) => {
-                                    println!("socket pong");
-                                }
-                                Message::Close(_) => {
-                                    panic!("Close should have been mapped to err");
-                                }
-                            }
-
-                        },
-                        Err(e) => {
-                            println!("{:?}", e);
-
-                            let (_, _) = join!(
-                                lobby_chan.send(InMsg {uid: user_id.clone(), cmd: LobbyInMsg::Leave }),
-                                lobby.remove_user(user_id)
-                            );
-                            return
-                        }
-                    }
-
-                },
-                lobby_res = rx.recv() => {
-                    match lobby_res {
-                        Some(msg) => {
-                            dbg!("Send message", &msg);
-                            let res = match serde_json::to_string(&msg) {
-                                Ok(txt) => socket.send(Message::Text(txt)).await,
-                                Err(_) => {
-                                    println!("Unable to encode {:?}", msg);
-                                    Ok(())
-                                }
-                            };
-                            if let Err(e) = res {
-                                println!("Error Sending msg {:?} {}", msg, e)
-                            }
-                        },
-                        None => {
-                            socket.send(Message::Text("Error: Lobby Closed".to_string())).await.unwrap_or_else(|err| {
-                                println!("Lobby Closed message failed to send {}", err);
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    });
+    ws.on_upgrade(move |socket: WebSocket| socket::handle_socket(socket, lobby))
 }
