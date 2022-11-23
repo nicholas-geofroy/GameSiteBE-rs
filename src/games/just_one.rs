@@ -1,7 +1,9 @@
 use itertools::Itertools;
+use rand::{seq::SliceRandom, thread_rng};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+use tokio::fs::read_to_string;
 
 #[derive(Debug)]
 pub enum InvalidMove {
@@ -46,13 +48,13 @@ struct RoundData<'a> {
 }
 
 impl<'a> RoundData<'a> {
-    fn new(players: Vec<String>, guesser: &'a str) -> RoundData<'a> {
+    fn new(players: Vec<String>, guesser: &'a str, word: String) -> RoundData<'a> {
         return RoundData {
             players,
             guesser,
             hints: HashMap::new(),
             guesses: Vec::new(),
-            word: "word".to_owned(), //TODO: Random word
+            word,
             cur_state: RoundState::GivingHints,
         };
     }
@@ -234,6 +236,11 @@ pub struct GameData<'a> {
 
     round: usize,
     rounds: Vec<RoundData<'a>>,
+
+    #[serde(skip)]
+    words: Arc<WordList>,
+    #[serde(skip)]
+    cur_word: usize,
 }
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "actionType", content = "data")]
@@ -255,12 +262,28 @@ enum JustOneMove {
     NextRound,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+struct WordList {
+    description: String,
+    words: Vec<String>,
+}
+
 impl<'a> GameData<'a> {
-    pub fn new(players: &'a Vec<String>) -> GameData<'a> {
+    pub async fn new(players: &'a Vec<String>) -> GameData<'a> {
+        let words = read_to_string("assets/nouns.json")
+            .await
+            .expect("Expected nouns file to exist");
+
+        let mut word_list: WordList =
+            serde_json::from_str(&words).expect("Could not parse words from file");
+        word_list.words.shuffle(&mut thread_rng());
+
         let mut game = GameData {
             players,
             round: 0,
             rounds: Vec::new(),
+            words: Arc::new(word_list),
+            cur_word: 0,
         };
         game.new_round();
 
@@ -271,6 +294,11 @@ impl<'a> GameData<'a> {
         self.rounds.push(RoundData::new(
             self.players.clone(),
             self.players[self.round % self.players.len()].as_str(),
+            self.words
+                .words
+                .get(self.cur_word % self.words.words.len())
+                .expect("Index out of range")
+                .to_owned(),
         ));
         self.round += 1;
     }
@@ -290,6 +318,8 @@ impl<'a> GameData<'a> {
             players: self.players,
             round: self.round,
             rounds,
+            words: self.words.clone(),
+            cur_word: self.cur_word,
         };
     }
 

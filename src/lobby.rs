@@ -2,7 +2,6 @@ use crate::games::just_one::GameData; // TODO: dynamic game
 use crate::games::GameType;
 use crate::models::lobby::{InMsg, LobbyInMsg, LobbyOutMsg};
 use futures::future::join_all;
-use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -54,7 +53,7 @@ impl Lobby {
                 Start => {
                     println!("Start Game");
                     let users: Vec<String> = self.get_members().await;
-                    self.game_loop(&mut rx, GameData::new(&users)).await;
+                    self.game_loop(&mut rx, GameData::new(&users).await).await;
                 }
                 GetUsers => {
                     println!("Get Users {}", req_uid);
