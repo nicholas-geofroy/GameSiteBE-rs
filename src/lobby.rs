@@ -64,7 +64,7 @@ impl Lobby {
                     println!("Get Game Data {}", req_uid);
                     self.send(req_uid, SelectedGame(self.game)).await;
                 }
-                GameMove { action: _ } => {
+                GameMove(_) => {
                     self.send(
                         req_uid,
                         Error {
@@ -110,7 +110,7 @@ impl Lobby {
                     println!("Get Game Data {}", req_uid);
                     self.send(req_uid, SelectedGame(self.game)).await;
                 }
-                GameMove { action } => match game.make_move(&req_uid, action) {
+                GameMove(action) => match game.make_move(&req_uid, action) {
                     Ok(state) => {
                         self.broadcast_state(&state).await;
                     }

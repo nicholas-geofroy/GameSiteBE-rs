@@ -23,7 +23,7 @@ pub enum LobbyInMsg {
     #[serde(rename_all = "camelCase")]
     GetGameData,
     #[serde(rename_all = "camelCase")]
-    GameMove { action: Value },
+    GameMove(Value),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]

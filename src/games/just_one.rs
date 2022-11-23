@@ -20,18 +20,21 @@ enum RoundState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Guess {
     val: String,
     is_correct: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Hint {
     val: String,
     duplicate: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct RoundData<'a> {
     players: Vec<String>,
     guesser: &'a str,
@@ -89,7 +92,7 @@ impl<'a> RoundData<'a> {
             h.duplicate = *h_count.get(&h.val.to_lowercase()).unwrap() > 1
         }
 
-        if self.hints.len() == self.players.len() {
+        if self.hints.len() == self.players.len() - 1 {
             self.cur_state = RoundState::RemovingDuplicates;
         }
 
@@ -224,6 +227,7 @@ impl<'a> RoundData<'a> {
 }
 
 #[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct GameData<'a> {
     players: &'a Vec<String>,
 
@@ -231,11 +235,19 @@ pub struct GameData<'a> {
     rounds: Vec<RoundData<'a>>,
 }
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "actionType", content = "data")]
+#[serde(rename_all = "camelCase")]
 enum JustOneMove {
     Guess(String),
     Hint(String),
-    SetDuplicate { hint_id: String },
-    SetUnique { hint_id: String },
+    #[serde(rename_all = "camelCase")]
+    SetDuplicate {
+        hint_id: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetUnique {
+        hint_id: String,
+    },
     RevealHints,
     CorrectGuess,
     WrongGuess,
