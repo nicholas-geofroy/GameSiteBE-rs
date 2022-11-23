@@ -192,13 +192,11 @@ impl<'a> RoundData<'a> {
     }
 
     fn filter(&self, user: &str) -> RoundData<'a> {
-        let hints: HashMap<String, Hint> = if self.guesser == user
-            && (self.cur_state == RoundState::GivingHints
-                || self.cur_state == RoundState::RemovingDuplicates)
-        {
-            self.hints
-                .iter()
-                .map(|(u, h)| {
+        let hints: HashMap<String, Hint> = self
+            .hints
+            .iter()
+            .map(|(u, h)| {
+                if self.guesser == user && (self.cur_state < RoundState::Guessing || h.duplicate) {
                     (
                         u.clone(),
                         Hint {
@@ -206,14 +204,11 @@ impl<'a> RoundData<'a> {
                             duplicate: h.duplicate,
                         },
                     )
-                })
-                .collect()
-        } else {
-            self.hints
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        };
+                } else {
+                    (u.clone(), h.clone())
+                }
+            })
+            .collect();
 
         let word = if self.guesser == user && self.cur_state != RoundState::RoundFinished {
             "".to_owned()
