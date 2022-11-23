@@ -11,7 +11,7 @@ pub enum InvalidMove {
     InvalidUser { msg: String },
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, PartialOrd, Debug, Clone, Copy)]
 enum RoundState {
     GivingHints,
     RemovingDuplicates,
@@ -24,6 +24,7 @@ enum RoundState {
 struct Guess {
     val: String,
     is_correct: bool,
+    user_check: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -112,7 +113,11 @@ impl<'a> RoundData<'a> {
         }
 
         let is_correct = val.to_lowercase().eq(&self.word.to_lowercase());
-        self.guesses.push(Guess { val, is_correct });
+        self.guesses.push(Guess {
+            val,
+            is_correct,
+            user_check: false,
+        });
         if is_correct {
             self.cur_state = RoundState::RoundFinished
         }
@@ -179,6 +184,7 @@ impl<'a> RoundData<'a> {
             .last_mut()
             .map(|guess| {
                 guess.is_correct = is_correct;
+                guess.user_check = true;
             })
             .ok_or(InvalidMove::WrongState {
                 msg: "No guess has been made yet".to_string(),
