@@ -1,10 +1,11 @@
 mod games;
 mod lobby;
+mod lobby_manager;
 mod models;
 mod socket;
 mod user_manager;
 use axum::extract::Extension;
-use lobby::LobbyManager;
+use lobby_manager::LobbyManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -42,18 +43,13 @@ async fn ws_handler<'a>(
     ws: WebSocketUpgrade,
     user_agent: Option<TypedHeader<headers::UserAgent>>,
 ) -> impl IntoResponse {
-    println!("Try connecting to lobby {}", lobby_id);
-
-    let lobby = {
-        let mut lm = lm.lock().await;
-
-        let lobby = lm.get(lobby_id).clone();
-        lobby
-    };
-
     if let Some(TypedHeader(user_agent)) = user_agent {
-        println!("`{}` connected to lobby {}", user_agent.as_str(), lobby.id);
+        println!(
+            "`{}` trying to connect to lobby {}",
+            user_agent.as_str(),
+            lobby_id
+        );
     }
 
-    ws.on_upgrade(move |socket: WebSocket| socket::handle_socket(socket, lobby))
+    ws.on_upgrade(move |socket: WebSocket| socket::handle_socket(socket, lm, lobby_id))
 }

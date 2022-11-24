@@ -1,42 +1,31 @@
-use crate::games::just_one::GameData; // TODO: dynamic game
-use crate::games::GameType;
-use crate::models::lobby::{InMsg, LobbyInMsg, LobbyOutMsg};
 use futures::future::join_all;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{mpsc, Mutex};
+use std::{collections::HashMap, sync::Arc};
+use tokio::sync::{mpsc::Receiver, Mutex};
 
-type UserMap = Arc<Mutex<HashMap<String, Sender<LobbyOutMsg>>>>;
+use crate::{
+    games::{just_one::GameData, GameType},
+    lobby_manager::User,
+    models::lobby::{InMsg, LobbyInMsg, LobbyOutMsg},
+};
 
-#[derive(Clone)]
 pub struct Lobby {
-    pub id: String,
-    pub in_msg: Sender<InMsg>,
-    users: UserMap,
+    id: String,
+    users: Arc<Mutex<HashMap<String, User>>>,
+    rx: Receiver<InMsg>,
     game: GameType,
 }
 
 impl Lobby {
-    pub fn new(id: String) -> Lobby {
-        let (tx, rx) = mpsc::channel(100);
-        let users = Arc::new(Mutex::new(HashMap::new()));
-        let mut lobby = Lobby {
-            id: id.clone(),
-            in_msg: tx,
+    pub fn new(id: String, users: Arc<Mutex<HashMap<String, User>>>, rx: Receiver<InMsg>) -> Lobby {
+        return Lobby {
+            id,
             users,
+            rx,
             game: GameType::JustOne,
         };
-        let ret = lobby.clone();
-
-        tokio::spawn(async move {
-            lobby.lobby_loop(rx).await;
-        });
-        ret
     }
-
-    async fn lobby_loop(&mut self, mut rx: Receiver<InMsg>) {
-        while let Some(msg) = rx.recv().await {
+    pub async fn lobby_loop(&mut self) {
+        while let Some(msg) = self.rx.recv().await {
             use LobbyInMsg::*;
             use LobbyOutMsg::*;
             let req_uid = msg.uid;
@@ -53,7 +42,7 @@ impl Lobby {
                 Start => {
                     println!("Start Game");
                     let users: Vec<String> = self.get_members().await;
-                    self.game_loop(&mut rx, GameData::new(&users).await).await;
+                    self.game_loop(GameData::new(&users).await).await;
                 }
                 GetUsers => {
                     println!("Get Users {}", req_uid);
@@ -76,9 +65,9 @@ impl Lobby {
         }
     }
 
-    async fn game_loop(&mut self, rx: &mut Receiver<InMsg>, mut game: GameData<'_>) {
+    async fn game_loop(&mut self, mut game: GameData<'_>) {
         self.broadcast_state(&game).await;
-        while let Some(msg) = rx.recv().await {
+        while let Some(msg) = self.rx.recv().await {
             use LobbyInMsg::*;
             use LobbyOutMsg::*;
 
@@ -150,8 +139,9 @@ impl Lobby {
     async fn broadcast(&self, f: impl Fn(&str) -> LobbyOutMsg) {
         let users = self.users.lock().await;
 
-        let sends = users.iter().map(|(u_id, tx)| async {
-            tx.send(f(u_id))
+        let sends = users.iter().map(|(u_id, u)| async {
+            u.out
+                .send(f(u_id))
                 .await
                 .map_err(|e| format!("Unable to send {}", e))
         });
@@ -173,42 +163,10 @@ impl Lobby {
             println!("Tried to send message to {} who was not found", &user);
         }
 
-        let tx = um.get(&user).unwrap();
+        let u = um.get(&user).unwrap();
 
-        if let Err(e) = tx.send(msg).await {
+        if let Err(e) = u.out.send(msg).await {
             println!("Unable to send {}", e);
-        }
-    }
-
-    pub async fn remove_user(&mut self, user_id: String) {
-        self.users.lock().await.remove(&user_id);
-    }
-
-    pub async fn add_user(&mut self, user_id: String, tx: Sender<LobbyOutMsg>) {
-        self.users.lock().await.insert(user_id, tx);
-    }
-}
-
-//TODO: could probably use Rc<String> to reduce copiess
-pub struct LobbyManager {
-    lobbies: HashMap<String, Lobby>,
-}
-
-impl LobbyManager {
-    pub fn new() -> LobbyManager {
-        LobbyManager {
-            lobbies: HashMap::new(),
-        }
-    }
-
-    pub fn get(&mut self, id: String) -> Lobby {
-        match self.lobbies.get(&id) {
-            Some(l) => l.clone(),
-            None => {
-                let l = Lobby::new(id);
-                self.lobbies.insert(l.id.clone(), l.clone());
-                l
-            }
         }
     }
 }

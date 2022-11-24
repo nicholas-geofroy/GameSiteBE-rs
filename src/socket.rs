@@ -1,25 +1,30 @@
-use crate::lobby::Lobby;
+use std::sync::Arc;
+
+use crate::lobby_manager::LobbyManager;
 use crate::models::lobby::InMsg;
 use crate::models::lobby::{LobbyInMsg, LobbyOutMsg};
 use axum::extract::ws::{Message, WebSocket};
 use eyre::{eyre, WrapErr};
 use serde_json;
+use tokio::select;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::{join, select, sync::mpsc};
+use tokio::sync::Mutex;
 
 struct UserManager {
     user_id: String,
-    lobby: Lobby,
+    lobby_id: String,
+    lm: Arc<Mutex<LobbyManager>>,
 
     socket: WebSocket,
     c_out: Sender<InMsg>,
     c_in: Receiver<LobbyOutMsg>,
 }
 
-async fn handle_join(mut socket: WebSocket, mut lobby: Lobby) -> Result<UserManager, String> {
-    let lobby_chan: mpsc::Sender<InMsg> = lobby.in_msg.clone();
-    let (tx, rx) = mpsc::channel(100);
-
+async fn handle_join(
+    mut socket: WebSocket,
+    lm_mutex: Arc<Mutex<LobbyManager>>,
+    lobby_id: String,
+) -> Result<UserManager, String> {
     let Some(res) = socket.recv().await else {
         return Err("Socked closed before join message".to_owned());
     };
@@ -35,8 +40,16 @@ async fn handle_join(mut socket: WebSocket, mut lobby: Lobby) -> Result<UserMana
         return Err(format!("Initial message from socket was not join message. Msg {}", txt));
     };
 
-    lobby.add_user(user_id.clone(), tx.clone()).await;
-    let res = lobby_chan
+    let mut lm = lm_mutex.lock().await;
+
+    lm.create_lobby(lobby_id.clone());
+
+    let (lobby_in, lobby_out) = match lm.add_user(&lobby_id, &user_id).await {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Error joining lobby {}: {:?}", lobby_id, e)),
+    };
+
+    let res = lobby_in
         .send(InMsg {
             uid: user_id.clone(),
             cmd: LobbyInMsg::Join {
@@ -48,17 +61,18 @@ async fn handle_join(mut socket: WebSocket, mut lobby: Lobby) -> Result<UserMana
     if res.is_err() {
         println!(
             "Could not join lobby {}, error: {}",
-            &lobby.id,
+            &lobby_id,
             res.unwrap_err()
         );
     }
 
     Ok(UserManager {
         user_id,
-        lobby,
+        lobby_id,
+        lm: lm_mutex.clone(),
         socket,
-        c_out: lobby_chan,
-        c_in: rx,
+        c_out: lobby_in,
+        c_in: lobby_out,
     })
 }
 
@@ -112,10 +126,10 @@ async fn communicate(mut um: UserManager) {
                     Err(e) => {
                         println!("{:?}", e);
 
-                        let (_, _) = join!(
-                            um.c_out.send(InMsg {uid: um.user_id.clone(), cmd: LobbyInMsg::Leave }),
-                            um.lobby.remove_user(um.user_id)
-                        );
+                        let mut lm = um.lm.lock().await;
+                        lm.disconnect_user(&um.lobby_id, &um.user_id).await;
+
+                        um.c_out.send(InMsg {uid: um.user_id.clone(), cmd: LobbyInMsg::Leave }).await;
                         return
                     }
                 }
@@ -147,8 +161,8 @@ async fn communicate(mut um: UserManager) {
     }
 }
 
-pub async fn handle_socket(socket: WebSocket, lobby: Lobby) {
-    let um = match handle_join(socket, lobby).await {
+pub async fn handle_socket(socket: WebSocket, lm: Arc<Mutex<LobbyManager>>, lobby_id: String) {
+    let um = match handle_join(socket, lm, lobby_id).await {
         Ok(c) => c,
         Err(e) => {
             println!("{}", e);
