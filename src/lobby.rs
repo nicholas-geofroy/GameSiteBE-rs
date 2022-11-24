@@ -63,6 +63,7 @@ impl Lobby {
                 }
             }
         }
+        println!("Lobby {} closed", self.id);
     }
 
     async fn game_loop(&mut self, mut game: GameData<'_>) {

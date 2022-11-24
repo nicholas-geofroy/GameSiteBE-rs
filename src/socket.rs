@@ -90,7 +90,6 @@ async fn communicate(mut um: UserManager) {
                         match msg {
                             Message::Text(t) => {
                                 if !t.eq("ping") {
-                                    println!("client sent str: {:?}", t);
                                     let msg: Result<LobbyInMsg, _> = serde_json::from_str(&t);
                                     match msg {
                                         Ok(msg) => {
@@ -138,7 +137,6 @@ async fn communicate(mut um: UserManager) {
             lobby_res = um.c_in.recv() => {
                 match lobby_res {
                     Some(msg) => {
-                        dbg!("Send message", &msg);
                         let res = match serde_json::to_string(&msg) {
                             Ok(txt) => um.socket.send(Message::Text(txt)).await,
                             Err(_) => {

@@ -6,13 +6,17 @@ use tokio::sync::{
 
 use crate::{
     lobby::Lobby,
-    models::lobby::{InMsg, LobbyOutMsg},
+    models::{
+        lobby::{InMsg, LobbyOutMsg},
+        user,
+    },
 };
 
 #[derive(Debug)]
 pub enum LobbyError {
     LobbyDoesNotExist,
     UserAlreadyConnected,
+    UserDoesNotExist,
 }
 
 pub struct LobbyManager {
@@ -64,7 +68,27 @@ impl LobbyManager {
         l_id: &String,
         u_id: &String,
     ) -> Result<(), LobbyError> {
-        todo!()
+        let any_connected = {
+            let lobby = match self.lobbies.get(l_id) {
+                Some(l) => l,
+                None => return Err(LobbyError::LobbyDoesNotExist),
+            };
+
+            let mut users = lobby.users.lock().await;
+
+            if !users.contains_key(u_id) {
+                return Err(LobbyError::UserDoesNotExist);
+            }
+            users.get_mut(u_id).expect("Expected user").is_conn = false;
+
+            users.iter().find(|(_, u)| u.is_conn).is_some()
+        };
+
+        if !any_connected {
+            self.lobbies.remove(l_id);
+        }
+
+        Ok(())
     }
 }
 
