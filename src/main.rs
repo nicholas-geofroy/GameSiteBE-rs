@@ -4,11 +4,12 @@ mod lobby_manager;
 mod models;
 mod socket;
 mod user_manager;
-use axum::extract::Extension;
+use axum::{extract::Extension, http::Method};
 use lobby_manager::LobbyManager;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tower_http::cors::{Any, CorsLayer};
 
 use axum::{
     extract::{ws::WebSocket, Path, WebSocketUpgrade},
@@ -19,11 +20,16 @@ use axum::{
 
 #[tokio::main]
 async fn main() {
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET])
+        .allow_origin(Any);
+
     let lm = Arc::new(Mutex::new(LobbyManager::new()));
     let app = Router::new()
         .route("/", get(handler))
         .route("/lobby/:id/ws", get(ws_handler))
-        .layer(Extension(lm));
+        .layer(Extension(lm))
+        .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
     println!("Listening on {}", addr);
