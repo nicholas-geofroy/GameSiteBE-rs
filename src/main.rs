@@ -31,7 +31,7 @@ async fn main() {
         .layer(Extension(lm))
         .layer(cors);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 9000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
     println!("Listening on {}", addr);
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
