@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 # Build and push image with newest code
 docker build -t gcr.io/gamesite-369621/backend:latest .
 docker push gcr.io/gamesite-369621/backend:latest
