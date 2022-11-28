@@ -77,6 +77,7 @@ impl<'a> GameData<'a> {
                 .expect("Index out of range")
                 .to_owned(),
         ));
+        self.cur_word += 1;
         self.round += 1;
     }
 
