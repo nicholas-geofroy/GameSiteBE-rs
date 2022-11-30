@@ -31,7 +31,9 @@ impl LobbyManager {
     }
 
     pub fn create_lobby(&mut self, id: String) {
-        self.lobbies.entry(id.clone()).or_insert(LobbyData::new(id));
+        self.lobbies
+            .entry(id.clone())
+            .or_insert_with(|| LobbyData::new(id));
     }
 
     pub async fn add_user(
