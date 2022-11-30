@@ -48,8 +48,8 @@ impl Lobby {
                     println!("Get Users {}", req_uid);
                     self.send(req_uid, Members(self.get_members().await)).await;
                 }
-                GetGameData => {
-                    println!("Get Game Data {}", req_uid);
+                GetGameType => {
+                    println!("Get Game Type {}", req_uid);
                     self.send(req_uid, SelectedGame(self.game)).await;
                 }
                 GameMove(_) => {
@@ -78,7 +78,7 @@ impl Lobby {
                     println!("User {} joined lobby {}", &user_id, &self.id);
                     let members = self.get_members().await;
                     self.broadcast(|_| Members(members.clone())).await;
-                    self.send(user_id, SelectedGame(self.game)).await;
+                    self.broadcast_state(&game).await;
                 }
                 Leave => println!("User {} left lobby {}", &req_uid, &self.id),
                 Start => {
@@ -95,8 +95,8 @@ impl Lobby {
                     println!("Get Users {}", req_uid);
                     self.send(req_uid, Members(self.get_members().await)).await;
                 }
-                GetGameData => {
-                    println!("Get Game Data {}", req_uid);
+                GetGameType => {
+                    println!("Get Game Type {}", req_uid);
                     self.send(req_uid, SelectedGame(self.game)).await;
                 }
                 GameMove(action) => match game.make_move(&req_uid, action) {

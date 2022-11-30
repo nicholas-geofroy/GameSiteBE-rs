@@ -21,7 +21,7 @@ pub enum LobbyInMsg {
     #[serde(rename_all = "camelCase")]
     GetUsers,
     #[serde(rename_all = "camelCase")]
-    GetGameData,
+    GetGameType,
     #[serde(rename_all = "camelCase")]
     GameMove(Value),
 }
